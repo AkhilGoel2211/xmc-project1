@@ -1,0 +1,91 @@
+data:
+  dataset: wiki31k
+  is_lf_data: False
+  augment_label_data: False
+  use_filter_eval: False
+  num_labels: 30938
+  max_len: 128
+  num_workers: 8
+  batch_size: 32
+  test_batch_size: 32
+
+model:
+  encoder:
+    encoder_model: "bert-base-uncased"
+    encoder_tokenizer: "${dataset.model.encoder.encoder_model}"
+    encoder_ftr_dim: ${encoder_feature_size:${dataset.model.encoder.encoder_model}}
+    pool_mode: 'last_hidden_avg' #[last_nhidden_conlast,last_hidden_avg]
+    feature_layers: 1
+    embed_dropout: 0.6
+    use_torch_compile: True
+    use_ngame_encoder_weights: False
+    ngame_checkpoint: ./NGAME_ENCODERS/${dataset.data.dataset}/state_dict.pt
+
+  penultimate:
+    use_penultimate_layer: True
+    penultimate_size: 4096
+    penultimate_activation: relu
+
+  ffi:
+    use_sparse_layer: True
+    fan_in: 64
+    prune_mode: threshold
+    rewire_threshold: 0.01
+    rewire_fraction: 0.25
+    growth_mode: random
+    growth_init_mode: zero
+    input_features: ${input_size_select:${dataset.model.penultimate.use_penultimate_layer},
+                          ${dataset.model.penultimate.penultimate_size},${dataset.model.encoder.feature_layers},${dataset.model.encoder.encoder_ftr_dim}}   #set based on penultimate value in Encoder
+    output_features: ${dataset.data.num_labels} #depends on num_labels in data
+    rewire_interval: 300
+    use_rewire_scheduling: True
+    rewire_end_epoch: 0.66   #depends on epoch
+
+  auxiliary:
+    use_meta_branch: False
+    group_y_group: 0
+    meta_cutoff_epoch: 5   # varies based on fan_in values
+    auxloss_scaling: 0.5
+
+training:
+  seed: 42
+  amp:
+    enabled: True
+    dtype: float16
+
+  optimization:
+    loss_fn: squared_hinge   # ['bce','squared_hinge']
+    encoder_optimizer: adamw #[sgd,adam,adamw]
+    xmc_optimizer: adamw
+    epochs: 100   # depends on dataset
+    grad_accum_step: 1
+    encoder_lr: 1.0e-5
+    penultimate_lr: 1.0e-2
+    meta_lr: 0.0005
+    lr: 0.01  # learning rate of final layer
+    wd_encoder: 0.01   # weight decay on encoder
+    wd: 0.0001  # weight decay of final layer
+    lr_scheduler: CosineScheduleWithWarmup   #[MultiStepLR,CosineScheduleWithWarmup,ReduceLROnPlateau]
+    lr_scheduler_xmc: CosineScheduleWithWarmup #[MultiStepLR,CosineScheduleWithWarmup,ReduceLROnPlateau]
+    warmup_steps: 1000
+    training_steps: 1  #selected at runtime based on batch size and dataloader
+
+  evaluation:
+    train_evaluate: False
+    train_evaluate_every: 10
+    test_evaluate_every: 1
+    A: 0.5  # for propensity calculation
+    B: 0.4  # for propensity calculation
+    eval_psp: True
+
+  verbose:
+    show_iter: False  # print loss during training
+    print_iter: 2000  # how often (iteration) to print
+    use_wandb: False
+    wandb_runname: none
+    logging: True
+    log_fname: log_wiki31k
+    
+  use_checkpoint: False  #whether to use automatic checkpoint
+  checkpoint_file: wiki31k.pt
+  best_p1: 0.88  # to store the model above this performance in case of automatic checkpoint
