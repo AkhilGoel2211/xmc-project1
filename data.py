@@ -1,507 +1,495 @@
 import numpy as np
+import random
 import torch
-import scipy.sparse as sp
-import xclib.evaluation.xc_metrics as xc_metrics
-import itertools
-from tqdm import tqdm
-from scipy.sparse import csr_matrix
+from torch.utils.data import Dataset, DataLoader
+from transformers import AutoTokenizer
+import json
+
+# Change path of the precomputed clusters file in your running environment or include a new pair. (Only use when meta_branch=True)
+env2clusterpath = {'guest': './data/'}
+
+name_map = {
+    'eurlex4k': 'Eurlex-4K', 'wiki31k': 'Wiki10-31K', 'amazon670k': 'Amazon-670K',
+    'wiki500k': 'Wiki-500K', 'amazon3m': 'Amazon-3M',
+    'lfamazontitles131k': 'LF-AmazonTitles-131K', 'lfwikiseealso320k': 'LF-WikiSeeAlso-320k'
+}
+dtype_map = {'float16': torch.float16, 'bfloat16': torch.bfloat16}
+
+def collate(batch):
+    '''
+    Collate function to be used when sparse label format is needed.
+    '''
+    tokens = []
+    attention_mask = []
+    labels = []
+    group_label_ids = []
+    for i, (t, m, l, g) in enumerate(batch):
+        tokens.append(t)
+        attention_mask.append(m)
+        l_coo = [(i, lbl) for lbl in l]
+        labels += l_coo
+        group_label_ids.append(g)
+    return (
+        torch.utils.data.default_collate(tokens),
+        torch.utils.data.default_collate(attention_mask),
+        torch.Tensor(labels).to(torch.int32).contiguous(),
+        torch.utils.data.default_collate(group_label_ids),
+    )
 
 
-def sparsification(labels,label_map,num_labels):
-    """
-    Convert labels into a sparse CSR (Compressed Sparse Row) matrix.
+class DataHandler:
+    '''
+    Handle all the data reading, preprocessing, dataset, dataloader, and other utilities.
+    '''
 
-    This function takes a list of label lists (where each inner list contains the labels for a single sample),
-    maps these labels to a new label space if necessary, and returns a CSR matrix indicating the presence
-    or absence of labels for each sample.
-
-    Parameters:
-    - labels (list of lists of int or string): The labels for each sample. Each inner list contains the labels assigned to that sample.
-    - label_map (dict): A mapping from original label IDs to new label IDs. Used to convert labels to a new label space.
-    - num_labels (int): The total number of unique labels in the new label space.
-
-    Returns:
-    - csr_matrix: A CSR matrix of shape (len(labels), num_labels), where each row represents a sample and each column represents a label.
-                  The entries in the matrix are 1 if the label is present for the sample, and 0 otherwise.
-    """
-    
-    labels_tmp = [[label_map[y] for y in x] for x in labels]
-    rows = list(itertools.chain(*[[x]*len(y) for x,y in zip(range(len(labels_tmp)),labels_tmp)]))
-    val = np.ones(len(rows))
-    y_true = sp.csr_matrix((val, (rows, list(itertools.chain(*labels_tmp)))), shape=(len(labels_tmp),num_labels))
-    return y_true
-    
-
-class Evaluator:
-    """
-    A class for evaluating the performance of models on a given dataset using various metrics.
-
-    This class supports two modes of operation ('memory_efficient' and 'debug') to accommodate datasets of different sizes.
-    It calculates various evaluation metrics, including precision at K, recall at K, and others, depending on the configuration.
-    For larger datasets, the 'memory_efficient' mode is recommended.
-
-    Parameters:
-    - topk (int): The number of top predictions to consider when calculating metrics.
-    - cfg: A configuration object containing model and evaluation settings, such as device, number of labels, and metric flags.
-    - mode (str): The mode of operation, which can be either 'memory_efficient' or 'debug'. Influences how data is processed.
-    - eval_recall (bool): Flag indicating whether to calculate recall metrics.
-    - eval_psp (bool): Flag indicating whether to calculate propensity-scored precision metrics.
-    - eval_psr (bool): Flag indicating whether to calculate propensity-scored recall metrics.
-    - eval_ndcg (bool): Flag indicating whether to calculate NDCG metrics.
-    - label_map (dict): A mapping from original label IDs to new label IDs, used for converting labels to a consistent label space.
-    - y_true (csr_matrix): The ground truth labels in sparse CSR format, used for comparison with predictions.
-
-    Methods:
-    - Calculate_Metrics(data_loader, model): Calculates the configured metrics for the given model and dataset.
-    - _Calculate_Metrics_DEBUG(data_loader, model): Debug mode metric calculation, supporting various metrics.
-    - _Calculate_Metrics_ME(data_loader, model): Memory-efficient metric calculation, currently supports precision at K.
-
-    Note:
-    Currently 'memory_efficient' mode only supports P@K metrics.
-    """
-    
-
-    def __init__(self, cfg, label_map, true_labels, mode='memory_efficient', train_labels=None, topk=10, filter_path=None, head_labels=None, tail_labels=None):
-        """
-        Initializes the Evaluator with the necessary configuration, label mappings, and mode of operation.
-
-        Args:
-        - cfg: Configuration object containing settings such as the device, number of labels, and which metrics to evaluate.
-        - label_map (dict): Mapping from original label IDs to new label IDs for consistent label representation.
-        - true_labels (list of lists of int): The true labels for each sample in the dataset.
-        - mode (str, optional): The mode of operation ('memory_efficient' or 'debug'). Defaults to 'memory_efficient'.
-        - train_labels (list of lists of int/str, optional): The labels for each sample in the training set, required for some metrics.
-        - topk (int, optional): The number of top predictions to consider for metric calculations. Defaults to 10.
-        - head_labels (set of int, optional): Set of head label IDs for specific metrics.
-        - tail_labels (set of int, optional): Set of tail label IDs for specific metrics.
+    def __init__(self, cfg, path):
         
-        Raises:
-        - ValueError: If `train_labels` is not provided when required for propensity-scored metric calculations in 'debug' mode.
-        """
-
-        self.topk = topk
         self.cfg = cfg
-        self.mode = mode
-        self.eval_psp = cfg.training.evaluation.eval_psp
-        self.filter_mat = None
+        self.path = path
         self.device = torch.device(cfg.environment.device)
+        self.low_precision_dtype = dtype_map[cfg.training.amp.dtype]
 
-        # Head and tail labels
-        self.head_labels = set(head_labels) if head_labels else set()
-        self.tail_labels = set(tail_labels) if tail_labels else set()
+        self.label_map = {}
+        self.head_tail_split = None  # head/tail label distinction
+        self.read_files()
+        if cfg.model.auxiliary.use_meta_branch:
+            self.group_y = self.load_group(cfg.data.dataset)
 
-        assert self.mode in ['memory_efficient', 'debug'], f"mode can be either large or small not {mode}"
-        if self.eval_psp and train_labels is None and self.mode == 'debug':
-            raise ValueError("train_labels should be passed in order to calculate propensity based metrics")
+    def load_group(self, dataset):
+        '''
+        Loading of precomputed cluster file.
+        '''
+        print('Loading cluster groups')
+        cluster_path = env2clusterpath[self.cfg.environment.running_env] + name_map[dataset] + f'/label_group{self.cfg.model.auxiliary.group_y_group}.npy'
+        print('Cluster path:', cluster_path)
+        return np.load(cluster_path, allow_pickle=True)
 
+    def read_files(self):
+        if not self.cfg.data.is_lf_data:
+            self.train_raw_texts = self._read_text_files(self.path.train_raw_texts)
+            self.test_raw_texts = self._read_text_files(self.path.test_raw_texts)
+
+            self.train_labels = self._read_label_files(self.path.train_labels)
+            self.test_labels = self._read_label_files(self.path.test_labels)
+        else:
+            self.train_raw_texts, train_labels = self._read_lf_files(self.path.train_json)
+            self.train_labels = train_labels
+            self.test_raw_texts, self.test_labels = self._read_lf_files(self.path.test_json)
+            if self.cfg.data.augment_label_data:
+                label_raw_texts, label_labels = self._read_lf_files(self.path.label_json, label_json=True)
+                self.train_raw_texts += label_raw_texts
+                self.train_labels += label_labels
+
+        for i, k in enumerate(sorted(self.label_map.keys())):
+            self.label_map[k] = i
+
+        # Head/Tail Label Distinction
+        self.compute_head_tail_split()
+
+    def compute_head_tail_split(self):
+        '''
+        Compute the head/tail label split based on the frequency of label occurrences in the dataset.
+        '''
+        label_counts = {label: 0 for label in self.label_map.keys()}
+        for lbl_list in self.train_labels:
+            for lbl in lbl_list:
+                if lbl in label_counts:
+                    label_counts[lbl] += 1
+
+        sorted_labels = sorted(label_counts.items(), key=lambda x: x[1], reverse=True)
+        head_count = int(len(sorted_labels) * 0.1) #head_count = int(len(sorted_labels) * self.cfg.data.head_tail_split_ratio)
+
+        self.head_tail_split = {
+            'head': {lbl for lbl, _ in sorted_labels[:head_count]},
+            'tail': {lbl for lbl, _ in sorted_labels[head_count:]}
+        }
+
+        print(f"Head labels: {len(self.head_tail_split['head'])}, Tail labels: {len(self.head_tail_split['tail'])}")
+
+    def _read_text_files(self, filename):
+        container = []
+        with open(filename, encoding="utf8") as f:
+            for line in f:
+                container.append(line.strip())
+        return container
+
+    def _read_label_files(self, filename):
+        container = []
+        with open(filename, encoding="utf8") as f:
+            for line in f:
+                for l in line.strip().split():
+                    self.label_map[l] = 0
+                container.append(line.strip().split())
+        return container
+
+    def _read_lf_files(self, file, label_json=False):
+        text_data = []
+        labels = []
+        key = 'title' if 'titles' in self.cfg.data.dataset else 'content'
+        if label_json:
+            key = 'title'
+        with open(file) as f:
+            for i, line in enumerate(f):
+                data = json.loads(line)
+                text_data.append(data[key])
+                if label_json:
+                    labels.append([i])
+                else:
+                    lbls = data['target_ind']
+                    for l in lbls:
+                        self.label_map[l] = 0
+                    labels.append(lbls)
+        return text_data, labels
+
+    def getDatasets(self):
+        group_y = None
+        if self.cfg.model.auxiliary.use_meta_branch:
+            group_y = self.group_y
+
+        train_dset = SimpleDataset(self.cfg, self.train_raw_texts, self.train_labels, self.label_map, group_y, self.head_tail_split, mode='train', task='train')
+        test_dset = SimpleDataset(self.cfg, self.test_raw_texts, self.test_labels, self.label_map, None, self.head_tail_split, mode='test')
+        train_dset_eval = SimpleDataset(self.cfg, self.train_raw_texts, self.train_labels, self.label_map, None, self.head_tail_split, mode='train')
+
+        return train_dset, test_dset, train_dset_eval
+
+    def getDataLoader(self, dset, mode='train'):
+        '''
+        Separate DataLoader for train (sparse labels) and evaluate (dense labels) to optimize both processes.
+        '''
+        assert mode in ['train', 'test'], "Mode must be either 'train' or 'test'."
+        shuffle = False
+        batch_size = self.cfg.data.test_batch_size
+        if mode == 'train':
+            shuffle = True
+            batch_size = self.cfg.data.batch_size
+
+        return DataLoader(dset, batch_size=batch_size, num_workers=self.cfg.data.num_workers, pin_memory=True, shuffle=shuffle, collate_fn=collate)
+
+    def get_head_labels(self):
+        """
+        Splits the training data into subsets containing only head labels.
+        Returns a dictionary where each key is a label, and the value is a list of training samples associated with it.
+        """
+        if not self.head_tail_split:
+            raise ValueError("Head-tail split not computed. Ensure compute_head_tail_split() is called.")
+
+        head_labels = self.head_tail_split['head']
+        head_label_data = {label: [] for label in head_labels}
+
+        # Iterate over training labels and texts to associate head labels with their texts
+        for text, labels in zip(self.train_raw_texts, self.train_labels):
+            for label in labels:
+                if label in head_labels:
+                    head_label_data[label].append(text)
+
+        return head_label_data
+
+    def get_tail_labels(self):
+        """
+        Splits the training data into subsets containing only tail labels.
+        Returns a dictionary where each key is a label, and the value is a list of training samples associated with it.
+        """
+        if not self.head_tail_split:
+            raise ValueError("Head-tail split not computed. Ensure compute_head_tail_split() is called.")
+
+        tail_labels = self.head_tail_split['tail']
+        tail_label_data = {label: [] for label in tail_labels}
+
+        # Iterate over training labels and texts to associate tail labels with their texts
+        for text, labels in zip(self.train_raw_texts, self.train_labels):
+            for label in labels:
+                if label in tail_labels:
+                    tail_label_data[label].append(text)
+
+        return tail_label_data
+class SimpleDataset(Dataset):
+    '''
+    Dataset class to handle tokenization, labels, and head/tail split.
+    '''
+
+    def __init__(self, cfg, raw_texts, labels, label_map, group_y, head_tail_split, mode='train', task='evaluate'):
+        super(SimpleDataset).__init__()
+        self.cfg = cfg
+        self.task = task
+        self.group_y = group_y
+        self.head_tail_split = head_tail_split
+        self.tokenizer = AutoTokenizer.from_pretrained(cfg.model.encoder.encoder_tokenizer, do_lower_case=True)
+        self.cls_token_id = [101]
+        self.sep_token_id = [102]
+
+        self.raw_text = raw_texts
+        self.labels = labels
         self.label_map = label_map
-        if self.mode == 'debug':
-            self.y_true = sparsification(true_labels, label_map, cfg.data.num_labels)
-            if filter_path is not None:
-                temp = np.fromfile(filter_path, sep=' ').astype(int)
-                temp = temp.reshape(-1, 2).T
-                self.filter_mat = sp.coo_matrix((np.ones(temp.shape[1]), (temp[0], temp[1])), self.y_true.shape).tocsr()
-        if self.eval_psp and self.mode == 'debug':
-            y_train = sparsification(train_labels, label_map, cfg.data.num_labels)
-            num_instances, _ = y_train.shape
-            freqs = np.ravel(np.sum(y_train, axis=0))
-            C = (np.log(num_instances) - 1) * np.power(cfg.training.evaluation.B + 1, cfg.training.evaluation.A)
-            wts = 1.0 + C * np.power(freqs + cfg.training.evaluation.B, -cfg.training.evaluation.A)
-            self.wts = np.ravel(wts)
-        
-    def _prediction_matrix_dense(self,data_loader,model):
-        """
-        Generates a dense prediction matrix from model predictions for a dataset.
+        self.mode = mode
 
-        Args:
-        - data_loader: DataLoader providing batches of data (tokens, masks, labels).
-        - model:  Model for generating predictions.
+        # Handle meta-branch
+        if group_y is not None:
+            self.initialize_group_y()
 
-        Returns:
-        - A dense numpy array of predictions with shape (N, num_labels), where N is the dataset size.
-        """
-        model.eval()
-        pred_matrix = torch.zeros((1,self.cfg.data.num_labels))
-        with torch.no_grad():
-            for step,data in tqdm(enumerate(data_loader)):
-                tokens,mask,labels,_ = data
-                tokens, mask, labels = tokens.to(self.device),mask.to(self.device),labels.to(self.device)
-                logits,_ = model(tokens,mask)
-                pred_matrix = torch.cat((pred_matrix,logits.cpu()),dim=0)
-        
-        pred_matrix = pred_matrix[1:].numpy()
-        
-        return pred_matrix
-    
-    def _prediction_matrix_sparse(self,data_loader,model):
-        """
-        Builds a sparse prediction matrix applicable for large datasets.
+    def initialize_group_y(self):
+        '''
+        Prepare group_y mapping for meta-branch usage.
+        '''
+        self.group_y, self.n_group_y_labels = [], self.group_y.shape[0]
+        self.map_group_y = np.empty(len(self.label_map), dtype=np.longlong)
+        for idx, labels in enumerate(self.group_y):
+            self.group_y.append([self.label_map[label] for label in labels if label in self.label_map])
+            self.map_group_y[self.group_y[-1]] = idx
+        self.group_y = np.array(self.group_y, dtype=object)
 
-        Parameters:
-        - data_loader: Yields batches of data.
-        - model: Model to evaluate.
+    def __len__(self):
+        return len(self.raw_text)
 
-        Returns:
-        - Sparse prediction matrix as csr_matrix.
-        """
-        model.eval()
-        rows, cols, vals = torch.zeros([1]).to(self.device), torch.zeros([1]).to(self.device), torch.zeros([1]).to(self.device)
-        with torch.no_grad():
-            for step,data in tqdm(enumerate(data_loader)): #,total=len(data_loader
-                tokens,mask,labels,_ = data[:4]
-                bsz = tokens.shape[0]
-                tokens, mask, labels = tokens.to(self.device),mask.to(self.device),labels.to(self.device)
-                logits,_ = model(tokens,mask)
-                val,ind = torch.topk(logits,k=self.topk,sorted=True)
-                cols = torch.cat([cols,ind.flatten()])
-                start = step*data_loader.batch_size
-                rows = torch.cat([rows,torch.arange(start,start+bsz).repeat_interleave(self.topk).flatten().to(self.device)])
-                vals = torch.cat([vals,val.flatten()])
-                
-        
-        rows, cols, vals = rows[1:].cpu().numpy(), cols[1:].cpu().numpy(), vals[1:].cpu().numpy()
-        pred_matrix = csr_matrix((vals, (rows, cols)), shape=self.y_true.shape)
-        
-        return pred_matrix
+    def __getitem__(self, idx):
+        padding_length = 0
+        #raw_text = clean_str(self.raw_text[idx])
+        raw_text = self.raw_text[idx]
+        tokens = self.tokenizer.encode(raw_text, add_special_tokens=False, truncation=True, max_length=self.cfg.data.max_len)
+        tokens = tokens[:self.cfg.data.max_len - 2]
+        tokens = self.cls_token_id + tokens + self.sep_token_id
 
-    
-    def _Calculate_Metrics_DEBUG(self, data_loader, model):
-        """
-        Computes evaluation metrics using Xclib library. More suitable for debug and development purposes.
+        if len(tokens) < self.cfg.data.max_len:
+            padding_length = self.cfg.data.max_len - len(tokens)
+        attention_mask = torch.tensor([1] * len(tokens) + [0] * padding_length)
+        tokens = torch.tensor(tokens + ([0] * padding_length))
 
-        Args:
-        - data_loader: Provides batches of data.
-        - model: The model being evaluated.
+        labels = [self.label_map[i] for i in self.labels[idx] if i in self.label_map]
 
-        Returns:
-        - A dictionary of calculated metrics (e.g., 'P@K', 'R@K') for dataset.
-        """
-        pred_matrix = self._prediction_matrix_sparse(data_loader, model)
+        head_labels = [lbl for lbl in labels if lbl in self.head_tail_split['head']]
+        tail_labels = [lbl for lbl in labels if lbl in self.head_tail_split['tail']]
 
-        # Filtering part
-        if self.filter_mat is not None:
-            temp = self.filter_mat.tocoo()
-            pred_matrix[temp.row, temp.col] = 0
-            pred_matrix = pred_matrix.tocsr()
-            pred_matrix.eliminate_zeros()
+        if self.group_y is not None:
+            group_labels = self.map_group_y[labels]
+            group_label_ids = torch.zeros(self.n_group_y_labels)
+            group_label_ids.scatter_(0, torch.tensor(group_labels), 1.0)
+        else:
+            group_label_ids = torch.zeros(10)
 
-        # Overall metrics
-        pk = xc_metrics.precision(pred_matrix, self.y_true, k=5, sorted=True, use_cython=False).tolist()
-        metrics = {'P@K': pk}
-
-        # Head label metrics
-        if self.head_labels:
-            head_mask = np.zeros(self.y_true.shape[1], dtype=bool)
-            head_mask[list(self.head_labels)] = True
-            y_true_head = self.y_true[:, head_mask]
-            pred_matrix_head = pred_matrix[:, head_mask]
-            pk_head = xc_metrics.precision(pred_matrix_head, y_true_head, k=5, sorted=True, use_cython=False).tolist()
-            metrics['Head_P@K'] = pk_head
-
-        # Tail label metrics
-        if self.tail_labels:
-            tail_mask = np.zeros(self.y_true.shape[1], dtype=bool)
-            tail_mask[list(self.tail_labels)] = True
-            y_true_tail = self.y_true[:, tail_mask]
-            pred_matrix_tail = pred_matrix[:, tail_mask]
-            pk_tail = xc_metrics.precision(pred_matrix_tail, y_true_tail, k=5, sorted=True, use_cython=False).tolist()
-            metrics['Tail_P@K'] = pk_tail
-
-        # Propensity-scored metrics
-        if self.eval_psp:
-            metrics['PSP@K'] = xc_metrics.psprecision(pred_matrix, self.y_true, self.wts, k=5, sorted=True, use_cython=False).tolist()
-
-        return metrics
-    
-    def _Calculate_Metrics_ME(self, data_loader, model):
-        """
-        Calculates precision at K for large datasets in a memory-efficient and faster manner.
-
-        Parameters:
-        - data_loader: DataLoader yielding batches of data and labels. Expects the ground truth labels of dataloader in sparse format.
-        - model: PyTorch model for computing predictions.
-
-        Returns:
-        - Dictionary with 'P@K', 'Head_P@K', 'Tail_P@K', and optionally other keys.
-        
-        Note:
-            Currently supports P@K only.
-        """
-
-        model.eval()
-        with torch.no_grad():
-            Pk = [0, 0, 0, 0, 0]
-            Head_Pk = [0, 0, 0, 0, 0]
-            Tail_Pk = [0, 0, 0, 0, 0]
-
-            for data in tqdm(data_loader):
-                tokens, mask, labels, head_tail_flags = data[:4]
-                set2 = {tuple(sorted(pair)) for pair in labels.tolist()}
-                bsz = tokens.shape[0]
-                tokens, mask = tokens.to(self.device), mask.to(self.device)
-                pred_logits, _ = model(tokens, mask)
-                _, topk_indices = pred_logits.topk(5)
-
-                for k in [1, 2, 3, 4, 5]:
-                    topk_sparse = torch.cat([torch.arange(0, bsz).repeat_interleave(k).view(-1, 1).to(self.device), topk_indices[:, :k].reshape(-1, 1)], dim=-1)
-                    set1 = {tuple(sorted(pair)) for pair in topk_sparse.tolist()}
-
-                    Pk[k - 1] += sum(1 for pair in set2 if pair in set1) * 1 / (k * bsz)
-
-                    if head_tail_flags['head']:
-                        Head_Pk[k - 1] += sum(1 for pair in set2 if pair in set1) * 1 / (k * bsz)
-                    if head_tail_flags['tail']:
-                        Tail_Pk[k - 1] += sum(1 for pair in set2 if pair in set1) * 1 / (k * bsz)
-
-            Pk = [x / len(data_loader) for x in Pk]
-            Head_Pk = [x / len(data_loader) for x in Head_Pk]
-            Tail_Pk = [x / len(data_loader) for x in Tail_Pk]
-
-            metrics = {'P@K': Pk, 'Head_P@K': Head_Pk, 'Tail_P@K': Tail_Pk}
-        return metrics
-    
-    #@timeit
-    def Calculate_Metrics(self,data_loader,model):
-        if self.mode =='memory_efficient':
-            return self._Calculate_Metrics_ME(data_loader,model)
-        elif self.mode =='debug':
-            return self._Calculate_Metrics_DEBUG(data_loader,model)
-
+        return tokens, attention_mask, {'labels': labels, 'head_labels': head_labels, 'tail_labels': tail_labels}, group_label_ids
 
 
 
 # import numpy as np
+# import random
 # import torch
-# import scipy.sparse as sp
-# import xclib.evaluation.xc_metrics as xc_metrics
-# import itertools
-# from tqdm import tqdm
-# from scipy.sparse import csr_matrix
+# from torch.utils.data import Dataset, DataLoader
+# from transformers import AutoTokenizer
+# import json
+
+# #change path of the pre computed clusters file in your running environment or include new pair. (Only use when meta_branch=True )
+# env2clusterpath = {'guest':'./data/'}
+
+# name_map = {'eurlex4k': 'Eurlex-4K','wiki31k': 'Wiki10-31K', 'amazon670k': 'Amazon-670K', 'wiki500k': 'Wiki-500K',
+#                 'amazon3m':'Amazon-3M', 'lfamazontitles131k':'LF-AmazonTitles-131K',
+#                 'lfwikiseealso320k':'LF-WikiSeeAlso-320k' }
+# dtype_map = {'float16':torch.float16, 'bfloat16':torch.bfloat16}
 
 
-# def sparsification(labels,label_map,num_labels):
-#     """
-#     Convert labels into a sparse CSR (Compressed Sparse Row) matrix.
-
-#     This function takes a list of label lists (where each inner list contains the labels for a single sample),
-#     maps these labels to a new label space if necessary, and returns a CSR matrix indicating the presence
-#     or absence of labels for each sample.
-
-#     Parameters:
-#     - labels (list of lists of int or string): The labels for each sample. Each inner list contains the labels assigned to that sample.
-#     - label_map (dict): A mapping from original label IDs to new label IDs. Used to convert labels to a new label space.
-#     - num_labels (int): The total number of unique labels in the new label space.
-
-#     Returns:
-#     - csr_matrix: A CSR matrix of shape (len(labels), num_labels), where each row represents a sample and each column represents a label.
-#                   The entries in the matrix are 1 if the label is present for the sample, and 0 otherwise.
-#     """
+# def collate(batch):
+#     '''
+#     collate function to be used when sparse label format is needed.
     
-#     labels_tmp = [[label_map[y] for y in x] for x in labels]
-#     rows = list(itertools.chain(*[[x]*len(y) for x,y in zip(range(len(labels_tmp)),labels_tmp)]))
-#     val = np.ones(len(rows))
-#     y_true = sp.csr_matrix((val, (rows, list(itertools.chain(*labels_tmp)))), shape=(len(labels_tmp),num_labels))
-#     return y_true
+#     '''
+#     tokens = []
+#     attention_mask = []
+#     labels = []
+#     group_label_ids = []
+#     for i, (t, m, l, g) in enumerate(batch):
+#         tokens.append(t)
+#         attention_mask.append(m)
+#         l_coo = [(i, lbl) for lbl in l]
+#         labels += l_coo
+#         group_label_ids.append(g)
+#     return (
+#         torch.utils.data.default_collate(tokens),
+#         torch.utils.data.default_collate(attention_mask),
+#         torch.Tensor(labels).to(torch.int32).contiguous(),
+#         torch.utils.data.default_collate(group_label_ids),
+#     )
+
+
+# class DataHandler:
+#     '''
+#     Handle all the data reading, preprocessing ,dataset, dataloader and other stuff.
     
-
-# class Evaluator:
-#     """
-#     A class for evaluating the performance of models on a given dataset using various metrics.
-
-#     This class supports two modes of operation ('memory_efficient' and 'debug') to accommodate datasets of different sizes.
-#     It calculates various evaluation metrics, including precision at K, recall at K, and others, depending on the configuration.
-#     For larger datasets, the 'memory_efficient' mode is recommended.
-
-#     Parameters:
-#     - topk (int): The number of top predictions to consider when calculating metrics.
-#     - cfg: A configuration object containing model and evaluation settings, such as device, number of labels, and metric flags.
-#     - mode (str): The mode of operation, which can be either 'memory_efficient' or 'debug'. Influences how data is processed.
-#     - eval_recall (bool): Flag indicating whether to calculate recall metrics.
-#     - eval_psp (bool): Flag indicating whether to calculate propensity-scored precision metrics.
-#     - eval_psr (bool): Flag indicating whether to calculate propensity-scored recall metrics.
-#     - eval_ndcg (bool): Flag indicating whether to calculate NDCG metrics.
-#     - label_map (dict): A mapping from original label IDs to new label IDs, used for converting labels to a consistent label space.
-#     - y_true (csr_matrix): The ground truth labels in sparse CSR format, used for comparison with predictions.
-
-#     Methods:
-#     - Calculate_Metrics(data_loader, model): Calculates the configured metrics for the given model and dataset.
-#     - _Calculate_Metrics_DEBUG(data_loader, model): Debug mode metric calculation, supporting various metrics.
-#     - _Calculate_Metrics_ME(data_loader, model): Memory-efficient metric calculation, currently supports precision at K.
-
-#     Note:
-#     Currently 'memory_efficient' mode only supports P@K metrics.
-#     """
-    
-#     def __init__(self,cfg,label_map,true_labels,mode='memory_efficient',train_labels = None,topk=10,filter_path=None):
-#         """
-#         Initializes the Evaluator with the necessary configuration, label mappings, and mode of operation.
-
-#         Args:
-#         - cfg: Configuration object containing settings such as the device, number of labels, and which metrics to evaluate.
-#         - label_map (dict): Mapping from original label IDs to new label IDs for consistent label representation.
-#         - true_labels (list of lists of int): The true labels for each sample in the dataset.
-#         - mode (str, optional): The mode of operation ('memory_efficient' or 'debug'). Defaults to 'memory_efficient'.
-#         - train_labels (list of lists of int/str, optional): The labels for each sample in the training set, required for some metrics.
-#         - topk (int, optional): The number of top predictions to consider for metric calculations. Defaults to 10.
-
-#         Raises:
-#         - ValueError: If `train_labels` is not provided when required for propensity-scored metric calculations in 'debug' mode.
-#         """
-
-#         self.topk = topk
+#     '''
+#     def __init__(self,cfg,path):
+        
 #         self.cfg = cfg
-#         self.mode = mode
-#         self.eval_psp = cfg.training.evaluation.eval_psp
-#         self.filter_mat = None
+#         self.path = path
 #         self.device = torch.device(cfg.environment.device)
+#         self.low_precision_dtype = dtype_map[cfg.training.amp.dtype]
         
-        
-#         assert self.mode in ['memory_efficient','debug'], f"mode can be either large or small not {mode}"
-#         if self.eval_psp and train_labels is None and self.mode=='debug':
-#             raise ValueError("train_labels should be passed in order to calculate propensity based metrics")
-#         self.label_map = label_map
-#         if self.mode == 'debug':
-#             self.y_true = sparsification(true_labels,label_map,cfg.data.num_labels)
-#             if filter_path is not None:
-#                 temp = np.fromfile(filter_path, sep=' ').astype(int)
-#                 temp = temp.reshape(-1, 2).T
-#                 self.filter_mat = sp.coo_matrix((np.ones(temp.shape[1]), (temp[0], temp[1])), self.y_true.shape).tocsr()
-#         if self.eval_psp and self.mode=='debug':
-#             y_train = sparsification(train_labels,label_map,cfg.data.num_labels)
-#             num_instances, _ = y_train.shape
-#             freqs = np.ravel(np.sum(y_train, axis=0))
-#             C = (np.log(num_instances)-1)*np.power(cfg.training.evaluation.B+1, cfg.training.evaluation.A)
-#             wts = 1.0 + C*np.power(freqs+cfg.training.evaluation.B, -cfg.training.evaluation.A)
-#             self.wts = np.ravel(wts)
-        
-#     def _prediction_matrix_dense(self,data_loader,model):
-#         """
-#         Generates a dense prediction matrix from model predictions for a dataset.
+#         self.label_map = {}
+#         self.read_files()
+#         if cfg.model.auxiliary.use_meta_branch:
+#             self.group_y = self.load_group(cfg.data.dataset)
 
-#         Args:
-#         - data_loader: DataLoader providing batches of data (tokens, masks, labels).
-#         - model:  Model for generating predictions.
-
-#         Returns:
-#         - A dense numpy array of predictions with shape (N, num_labels), where N is the dataset size.
-#         """
-#         model.eval()
-#         pred_matrix = torch.zeros((1,self.cfg.data.num_labels))
-#         with torch.no_grad():
-#             for step,data in tqdm(enumerate(data_loader)):
-#                 tokens,mask,labels,_ = data
-#                 tokens, mask, labels = tokens.to(self.device),mask.to(self.device),labels.to(self.device)
-#                 logits,_ = model(tokens,mask)
-#                 pred_matrix = torch.cat((pred_matrix,logits.cpu()),dim=0)
         
-#         pred_matrix = pred_matrix[1:].numpy()
+#     def load_group(self,dataset):
+#         '''
+#         loading of precomputed cluster file
+#         '''
+#         print('Loading cluster groups')
+#         cluster_path = env2clusterpath[self.cfg.environment.running_env] + name_map[dataset] + f'/label_group{self.cfg.model.auxiliary.group_y_group}.npy'
+#         print('cluster path:',cluster_path)
+#         return np.load(cluster_path, allow_pickle=True)
         
-#         return pred_matrix
-    
-#     def _prediction_matrix_sparse(self,data_loader,model):
-#         """
-#         Builds a sparse prediction matrix applicable for large datasets.
+#     def read_files(self):
+        
+#         if not self.cfg.data.is_lf_data:
+#             self.train_raw_texts = self._read_text_files(self.path.train_raw_texts) 
+#             self.test_raw_texts = self._read_text_files(self.path.test_raw_texts) 
 
-#         Parameters:
-#         - data_loader: Yields batches of data.
-#         - model: Model to evaluate.
-
-#         Returns:
-#         - Sparse prediction matrix as csr_matrix.
-#         """
-#         model.eval()
-#         rows, cols, vals = torch.zeros([1]).to(self.device), torch.zeros([1]).to(self.device), torch.zeros([1]).to(self.device)
-#         with torch.no_grad():
-#             for step,data in tqdm(enumerate(data_loader)): #,total=len(data_loader
-#                 tokens,mask,labels,_ = data[:4]
-#                 bsz = tokens.shape[0]
-#                 tokens, mask, labels = tokens.to(self.device),mask.to(self.device),labels.to(self.device)
-#                 logits,_ = model(tokens,mask)
-#                 val,ind = torch.topk(logits,k=self.topk,sorted=True)
-#                 cols = torch.cat([cols,ind.flatten()])
-#                 start = step*data_loader.batch_size
-#                 rows = torch.cat([rows,torch.arange(start,start+bsz).repeat_interleave(self.topk).flatten().to(self.device)])
-#                 vals = torch.cat([vals,val.flatten()])
+#             self.train_labels = self._read_label_files(self.path.train_labels)
+#             self.test_labels = self._read_label_files(self.path.test_labels)
+#         else:
+#             self.train_raw_texts, train_labels = self._read_lf_files(self.path.train_json)
+#             self.train_labels = train_labels
+#             self.test_raw_texts, self.test_labels = self._read_lf_files(self.path.test_json)
+#             if self.cfg.data.augment_label_data:
+#                 label_raw_texts,label_labels = self._read_lf_files(self.path.label_json,label_json=True)
+#                 self.train_raw_texts += label_raw_texts
+#                 self.train_labels += label_labels
                 
+#         for i, k in enumerate(sorted(self.label_map.keys())):
+#             self.label_map[k] = i
         
-#         rows, cols, vals = rows[1:].cpu().numpy(), cols[1:].cpu().numpy(), vals[1:].cpu().numpy()
-#         pred_matrix = csr_matrix((vals, (rows, cols)), shape=self.y_true.shape)
         
-#         return pred_matrix
-
+#     def _read_text_files(self,filename):
+#         container = []
+#         f = open(filename,encoding="utf8")
+#         for line in f:
+#             container.append(line.strip())
     
-#     def _Calculate_Metrics_DEBUG(self,data_loader,model):
-#         """
-#         Computes evaluation metrics using Xclib library. More suitable for debug and developement purposes.
+#         return container
 
-#         Args:
-#         - data_loader: Provides batches of data.
-#         - model: The model being evaluated.
-
-#         Returns:
-#         - A dictionary of calculated metrics (e.g., 'P@K', 'R@K') for dataset.
-#         """
-
-#         pred_matrix = self._prediction_matrix_sparse(data_loader,model)
-        
-#         #filtering part
-#         if self.filter_mat is not None:
-#             temp = self.filter_mat.tocoo()
-#             pred_matrix[temp.row, temp.col] = 0
-#             pred_matrix = pred_matrix.tocsr()
-#             pred_matrix.eliminate_zeros()
-
-#         pk = xc_metrics.precision(pred_matrix, self.y_true, k=5, sorted=True, use_cython=False).tolist()
-#         metrics = {'P@K':pk}
-#         if self.eval_psp:
-#             metrics['PSP@K'] = xc_metrics.psprecision(pred_matrix, self.y_true, self.wts, k=5, sorted=True, use_cython=False).tolist()
+#     def _read_label_files(self,filename):
+#         container = []
+#         f = open(filename,encoding="utf8")
+#         for line in f:
+#             for l in line.strip().split():
+#                 self.label_map[l] = 0
+#             container.append(line.strip().split())
             
-#         return metrics
+#         return container
     
-#     def _Calculate_Metrics_ME(self,data_loader,model):
-#         """
-#         Calculates precision at K for large datasets in a memory-efficient and faster manner.
+#     def _read_lf_files(self,file,label_json=False):
+#         text_data = []
+#         labels = []
+#         key = 'title' if 'titles' in  self.cfg.data.dataset else 'content'
+#         if label_json:
+#             key='title'
+#         with open(file) as f:
+#             for i,line in enumerate(f):
+#                 data = json.loads(line)
+#                 text_data.append(data[key])
+#                 if label_json:
+#                     labels.append([i])
+#                 else:
+#                     lbls = data['target_ind']
+#                     for l in lbls:
+#                         self.label_map[l]=0
+#                     labels.append(lbls)
 
-#         Parameters:
-#         - data_loader: DataLoader yielding batches of data and labels. expects the ground truth labels of dataloader in sparse format.
-#                                                                 shape :(Np,2) where Np is the number of positive labels for that batch. 
-#         - model: PyTorch model for computing predictions.
-
-#         Returns:
-#         - Dictionary with 'P@K' key, containing precision at K (K=1,2,3,4,5) as a list.
+#         return text_data,labels
         
-#         Note:
-#             Currently supports P@K only.
-#         """
-
-#         model.eval()
-#         with torch.no_grad():
-#             Pk = [0, 0, 0,0,0]
-#             for data in tqdm(data_loader):
-#                 tokens,mask,labels,_ = data[:4]
-#                 set2 = {tuple(sorted(pair)) for pair in labels.tolist()}
-#                 bsz = tokens.shape[0]
-#                 tokens, mask = tokens.to(self.device),mask.to(self.device)
-#                 pred_logits,_ = model(tokens,mask)
-#                 _,topk_indices = pred_logits.topk(5)
-#                 for k in [1,2,3,4,5]:
-#                     topk_sparse = torch.cat([torch.arange(0,bsz).repeat_interleave(k).view(-1,1).to(self.device),topk_indices[:,:k].reshape(-1,1)],dim=-1)
-#                     #print(topk_sparse)
-#                     set1 = {tuple(sorted(pair)) for pair in topk_sparse.tolist()}
-#                     Pk[k-1] += sum(1 for pair in set2 if pair in set1)*1/(k*bsz)
-
-#             Pk = [x/len(data_loader) for x in Pk]
+    
+#     def getDatasets(self):
+        
+#         group_y = None
+#         if self.cfg.model.auxiliary.use_meta_branch:
+#             group_y = self.group_y
             
-#             metrics = {'P@K':Pk}
-
-#         return metrics
-    
-#     #@timeit
-#     def Calculate_Metrics(self,data_loader,model):
-#         if self.mode =='memory_efficient':
-#             return self._Calculate_Metrics_ME(data_loader,model)
-#         elif self.mode =='debug':
-#             return self._Calculate_Metrics_DEBUG(data_loader,model)
+#         train_dset = SimpleDataset(self.cfg,self.train_raw_texts,self.train_labels,self.label_map,group_y,mode='train',task='train')
+#         test_dset = SimpleDataset(self.cfg,self.test_raw_texts,self.test_labels,self.label_map,None,mode='test')
+#         train_dset_eval = SimpleDataset(self.cfg,self.train_raw_texts,self.train_labels,self.label_map,None,mode='train')
         
+#         return train_dset,test_dset,train_dset_eval
+    
+    
+        
+#     def getDataLoader(self,dset,mode='train'):
+#         '''
+#         #currently  separate dataloader for train (sparse labels) and evaluate (dense labels) in order to fasten both process.
+        
+#         '''
+#         assert mode in ['train','test'], " mode must be either train or test."
+#         shuffle=False
+#         batch_size = self.cfg.data.test_batch_size
+#         if mode == 'train':
+#             shuffle=True
+#             batch_size = self.cfg.data.batch_size
+
+#         return DataLoader(dset, batch_size=batch_size, num_workers=self.cfg.data.num_workers, pin_memory=True, shuffle=shuffle, collate_fn=collate)
 
 
+    
+    
+
+# class SimpleDataset(Dataset):
+    
+#     def __init__(self,cfg,raw_texts,labels,label_map,group_y,mode='train',task='evaluate'):
+#         super(SimpleDataset).__init__()
+        
+#         self.cfg = cfg
+#         self.task = task
+#         self.group_y = group_y
+#         self.tokenizer = AutoTokenizer.from_pretrained(cfg.model.encoder.encoder_tokenizer,do_lower_case=True)
+#         self.cls_token_id = [101]  # [self.tokenizer.cls_token_id]
+#         self.sep_token_id = [102]  # [self.tokenizer.sep_token_id]
+        
+#         self.raw_text = raw_texts
+#         self.labels = labels
+#         self.label_map = label_map
+#         self.mode = mode
+        
+#         #Only use when meta_branch=True
+#         if group_y is not None: 
+#             # group y mode
+#             self.group_y, self.n_group_y_labels = [], group_y.shape[0]
+#             self.map_group_y = np.empty(len(label_map), dtype=np.longlong)
+#             for idx, labels in enumerate(group_y):
+#                 self.group_y.append([])
+#                 for label in labels:
+#                     if self.cfg.data.is_lf_data:
+#                         self.group_y[-1].append(label_map[int(label)]) #changed original: int(label)
+#                     else:
+#                         self.group_y[-1].append(label_map[label]) #changed original: int(label)
+#                 self.map_group_y[self.group_y[-1]] = idx #check this line
+#                 self.group_y[-1]  = np.array(self.group_y[-1])
+#             self.group_y = np.array(self.group_y,dtype=object)
+        
+#             for i in range(len(self.map_group_y )):
+#                 val = self.map_group_y[i]
+#                 if val<0 or val>self.n_group_y_labels:
+#                     self.map_group_y[i] = random.choice(range(self.n_group_y_labels))
+                    
+                    
+#     def __len__(self):
+#         return len(self.raw_text)
+    
+#     def __getitem__(self,idx):
+        
+#         padding_length = 0
+#         #raw_text = clean_str(self.raw_text[idx])
+#         raw_text = self.raw_text[idx]
+#         tokens = self.tokenizer.encode(raw_text, add_special_tokens=False,truncation=True, max_length=self.cfg.data.max_len)
+#         tokens = tokens[:self.cfg.data.max_len-2]
+#         tokens = self.cls_token_id +tokens + self.sep_token_id
+        
+#         if len(tokens)<self.cfg.data.max_len:
+#             padding_length = self.cfg.data.max_len - len(tokens)
+#         attention_mask = torch.tensor([1] * len(tokens) + [0] * padding_length)
+#         tokens = torch.tensor(tokens+([0]*padding_length))
+        
+#         labels = [self.label_map[i] for i in self.labels[idx] if i in self.label_map]
+
+#         if self.group_y is not None:
+#             group_labels = self.map_group_y[labels] # list of group labels 
+#             group_label_ids = torch.zeros(self.n_group_y_labels)
+#             group_label_ids = group_label_ids.scatter(0, torch.tensor(group_labels),torch.tensor([1.0 for i in group_labels])) #group labels in one-hot format
+#         else:
+#             group_label_ids = torch.zeros(10)
+        
+#         return tokens, attention_mask, labels, group_label_ids
