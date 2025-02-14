@@ -9,7 +9,7 @@ from hydra.core.config_store import ConfigStore
 
 from config import ( 
         PathWiki31K, PathEurlex4K, PathAmazon670K, PathWiki500K, PathAmazon3M, 
-        PathLFAmazonTitles131K, PathLFWikiSeeAlso320K,SimpleConfig, validate_config
+        PathLFAmazonTitles131K, PathLFWikiSeeAlso320K,SimpleConfig, validate_config, FFIConfig
 )
 from data import DataHandler
 from runner import Runner
@@ -19,12 +19,14 @@ OmegaConf.register_new_resolver(
     'encoder_feature_size',
     lambda enc_name: 1024 if 'large' in enc_name else 768
 )
+
 OmegaConf.register_new_resolver(
     'input_size_select',
     lambda use_penultimate, penultimate_size, feature_layers, feature_dim: (
         penultimate_size if use_penultimate else feature_layers * feature_dim
     )
 )
+
 
 
 # Initialize configuration store
@@ -37,7 +39,7 @@ DATASET_NAME_MAP = {'eurlex4k': 'Eurlex-4K','wiki31k': 'Wiki10-31K', 'amazon670k
                 'lfwikiseealso320k':'LF-WikiSeeAlso-320k'}
 
 # Path configuration based on the environment
-ENVIRONMENT_TO_PATH = {'guest':'/l/WorkSpace/Datasets/XMC'}
+ENVIRONMENT_TO_PATH = {'guest':'../datasets/'}
 
 # Dataset path mapping
 DATASET_TO_PATH_OBJECT = {'eurlex4k': PathEurlex4K, 'wiki31k': PathWiki31K, 'amazon670k': PathAmazon670K,'wiki500k' : PathWiki500K,  
@@ -45,7 +47,7 @@ DATASET_TO_PATH_OBJECT = {'eurlex4k': PathEurlex4K, 'wiki31k': PathWiki31K, 'ama
             'lfwikiseealso320k':PathLFWikiSeeAlso320K}
 
 @hydra.main(version_base="1.2", config_path="../config/",config_name="config") 
-def main(cfg: SimpleConfig ) -> None:
+def main(cfg: SimpleConfig) -> None:
     '''
     Main function to initialize training process based on configuration.
     '''
@@ -57,8 +59,10 @@ def main(cfg: SimpleConfig ) -> None:
     torch.manual_seed(seed)
     random.seed(seed)
     np.random.seed(seed)
+    print(OmegaConf.to_yaml(cfg))
+
     
-    print(cfg)
+ 
     
      # Determine dataset path
     dataset_path = cfg.dataset_path if os.path.exists(cfg.dataset_path) else ENVIRONMENT_TO_PATH[cfg.environment.running_env]
@@ -102,6 +106,7 @@ def main(cfg: SimpleConfig ) -> None:
     # Validate and adjust configurations dynamically
     cfg.training.optimization.training_steps = len(train_loader)
     validate_config(cfg)
+
 
     runner = Runner(cfg,path,data_handler)  
 

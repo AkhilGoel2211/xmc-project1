@@ -13,7 +13,8 @@ from evaluate import Evaluator
 from utils import print_trainable_parameters, EarlyStopping, CosineDecay
 
 from torch_sparse.ops import sparse_hinge_loss
-
+from data import DataHandler
+from model import SimpleTModel
 
 dtype_map = {'float16':torch.float16, 'bfloat16':torch.bfloat16,'float32':torch.float32}
 optimizer_map = {'adam':Adam,'adamw':AdamW,'sgd':SGD}
@@ -23,7 +24,9 @@ class Runner:
     def __init__(self,cfg,path,data_handler):
         
         self.cfg = cfg
-        self.path = path
+        self.path = path    
+        data_handler = DataHandler(cfg,path)
+        
         self.label_map = data_handler.label_map
         self.device = torch.device(cfg.environment.device)
         self.low_precision_dtype = dtype_map[cfg.training.amp.dtype]

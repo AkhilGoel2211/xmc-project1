@@ -1,0 +1,480 @@
+2025.02.10-10:48:46  Training model for Configuration 
+ -----Data Config------ 
+ dataset: wiki31k
+is_lf_data: false
+augment_label_data: false
+use_filter_eval: false
+num_labels: 30938
+max_len: 128
+num_workers: 8
+batch_size: 32
+test_batch_size: 32
+ 
+  -----Model Config-----                 
+ encoder:
+  encoder_model: bert-base-uncased
+  encoder_tokenizer: ${dataset.model.encoder.encoder_model}
+  encoder_ftr_dim: ${encoder_feature_size:${dataset.model.encoder.encoder_model}}
+  pool_mode: last_hidden_avg
+  feature_layers: 1
+  embed_dropout: 0.6
+  use_torch_compile: true
+  use_ngame_encoder_weights: false
+  ngame_checkpoint: ./NGAME_ENCODERS/${dataset.data.dataset}/state_dict.pt
+penultimate:
+  use_penultimate_layer: true
+  penultimate_size: 4096
+  penultimate_activation: relu
+ffi:
+  use_sparse_layer: true
+  fan_in: 64
+  prune_mode: threshold
+  rewire_threshold: 0.01
+  rewire_fraction: 0.25
+  growth_mode: random
+  growth_init_mode: zero
+  input_features: ${input_size_select:${dataset.model.penultimate.use_penultimate_layer},
+    ${dataset.model.penultimate.penultimate_size},${dataset.model.encoder.feature_layers},${dataset.model.encoder.encoder_ftr_dim}}
+  output_features: ${dataset.data.num_labels}
+  rewire_interval: 300
+  use_rewire_scheduling: true
+  rewire_end_epoch: 0.66
+auxiliary:
+  use_meta_branch: false
+  group_y_group: 0
+  meta_cutoff_epoch: 5
+  auxloss_scaling: 0.5
+ 
+ ------Training Config------ 
+ seed: 42
+amp:
+  enabled: true
+  dtype: float16
+optimization:
+  loss_fn: squared_hinge
+  encoder_optimizer: adamw
+  xmc_optimizer: adamw
+  epochs: 100
+  grad_accum_step: 1
+  encoder_lr: 1.0e-05
+  penultimate_lr: 0.01
+  meta_lr: 0.0005
+  lr: 0.01
+  wd_encoder: 0.01
+  wd: 0.0001
+  lr_scheduler: CosineScheduleWithWarmup
+  lr_scheduler_xmc: CosineScheduleWithWarmup
+  warmup_steps: 1000
+  training_steps: 443
+evaluation:
+  train_evaluate: false
+  train_evaluate_every: 10
+  test_evaluate_every: 1
+  A: 0.5
+  B: 0.4
+  eval_psp: true
+verbose:
+  show_iter: false
+  print_iter: 2000
+  use_wandb: false
+  wandb_runname: AT131K_test
+  logging: true
+  log_fname: log_AT131K
+use_checkpoint: false
+checkpoint_file: wiki31k.pt
+best_p1: 0.88
+
+2025.02.10-10:48:46 trainable params: 114052442 || all params: 114052442 || trainable %: 100.0
+2025.02.10-10:52:43   Epoch:  1   train_loss:0.08673698680357625
+2025.02.10-10:52:43 Memory allocted after trining epoch=0 is : 1.3 GB 
+ Peak Memory allocted after trining epoch=0 is : 2.9 GB
+2025.02.10-10:54:40  Test set Performance : 
+ Epoch: 1, P@1:0.80925   P@3:0.60898  P@5:0.47379 
+ Epoch: 1, PSP@1:0.08355   PSP@3:0.08609  PSP@5:0.08190
+2025.02.10-10:58:07   Epoch:  2   train_loss:0.0029635740156047905
+2025.02.10-10:58:07 Memory allocted after trining epoch=1 is : 1.3 GB 
+ Peak Memory allocted after trining epoch=1 is : 3.14 GB
+2025.02.10-10:59:50  Test set Performance : 
+ Epoch: 2, P@1:0.81741   P@3:0.54867  P@5:0.42606 
+ Epoch: 2, PSP@1:0.08844   PSP@3:0.08178  PSP@5:0.07791
+2025.02.10-11:02:37   Epoch:  3   train_loss:0.0028414623869654487
+2025.02.10-11:02:37 Memory allocted after trining epoch=2 is : 1.3 GB 
+ Peak Memory allocted after trining epoch=2 is : 3.14 GB
+2025.02.10-11:04:12  Test set Performance : 
+ Epoch: 3, P@1:0.82104   P@3:0.64485  P@5:0.51811 
+ Epoch: 3, PSP@1:0.08687   PSP@3:0.09564  PSP@5:0.09408
+2025.02.10-11:06:59   Epoch:  4   train_loss:0.0026201215540069423
+2025.02.10-11:06:59 Memory allocted after trining epoch=3 is : 1.3 GB 
+ Peak Memory allocted after trining epoch=3 is : 3.14 GB
+2025.02.10-11:07:49  Test set Performance : 
+ Epoch: 4, P@1:0.82482   P@3:0.69226  P@5:0.58132 
+ Epoch: 4, PSP@1:0.08834   PSP@3:0.10459  PSP@5:0.10768
+2025.02.10-11:09:56   Epoch:  5   train_loss:0.0024828929553947854
+2025.02.10-11:09:56 Memory allocted after trining epoch=4 is : 1.3 GB 
+ Peak Memory allocted after trining epoch=4 is : 3.14 GB
+2025.02.10-11:10:48  Test set Performance : 
+ Epoch: 5, P@1:0.83071   P@3:0.71085  P@5:0.59779 
+ Epoch: 5, PSP@1:0.08978   PSP@3:0.10954  PSP@5:0.11361
+2025.02.10-11:12:56   Epoch:  6   train_loss:0.002404559396825411
+2025.02.10-11:12:56 Memory allocted after trining epoch=5 is : 1.3 GB 
+ Peak Memory allocted after trining epoch=5 is : 3.14 GB
+2025.02.10-22:47:31  Training model for Configuration 
+ -----Data Config------ 
+ dataset: wiki31k
+is_lf_data: false
+augment_label_data: false
+use_filter_eval: false
+num_labels: 30938
+max_len: 128
+num_workers: 8
+batch_size: 32
+test_batch_size: 32
+ 
+  -----Model Config-----                 
+ encoder:
+  encoder_model: bert-base-uncased
+  encoder_tokenizer: ${dataset.model.encoder.encoder_model}
+  encoder_ftr_dim: ${encoder_feature_size:${dataset.model.encoder.encoder_model}}
+  pool_mode: last_hidden_avg
+  feature_layers: 1
+  embed_dropout: 0.6
+  use_torch_compile: true
+  use_ngame_encoder_weights: false
+  ngame_checkpoint: ./NGAME_ENCODERS/${dataset.data.dataset}/state_dict.pt
+penultimate:
+  use_penultimate_layer: true
+  penultimate_size: 4096
+  penultimate_activation: relu
+ffi:
+  use_sparse_layer: true
+  fan_in: 64
+  prune_mode: threshold
+  rewire_threshold: 0.01
+  rewire_fraction: 0.25
+  growth_mode: random
+  growth_init_mode: zero
+  input_features: ${input_size_select:${dataset.model.penultimate.use_penultimate_layer},
+    ${dataset.model.penultimate.penultimate_size},${dataset.model.encoder.feature_layers},${dataset.model.encoder.encoder_ftr_dim}}
+  output_features: ${dataset.data.num_labels}
+  rewire_interval: 300
+  use_rewire_scheduling: true
+  rewire_end_epoch: 0.66
+auxiliary:
+  use_meta_branch: false
+  group_y_group: 0
+  meta_cutoff_epoch: 5
+  auxloss_scaling: 0.5
+ 
+ ------Training Config------ 
+ seed: 42
+amp:
+  enabled: true
+  dtype: float16
+optimization:
+  loss_fn: squared_hinge
+  encoder_optimizer: adamw
+  xmc_optimizer: adamw
+  epochs: 100
+  grad_accum_step: 1
+  encoder_lr: 1.0e-05
+  penultimate_lr: 0.01
+  meta_lr: 0.0005
+  lr: 0.01
+  wd_encoder: 0.01
+  wd: 0.0001
+  lr_scheduler: CosineScheduleWithWarmup
+  lr_scheduler_xmc: CosineScheduleWithWarmup
+  warmup_steps: 1000
+  training_steps: 443
+evaluation:
+  train_evaluate: false
+  train_evaluate_every: 10
+  test_evaluate_every: 1
+  A: 0.5
+  B: 0.4
+  eval_psp: true
+verbose:
+  show_iter: false
+  print_iter: 2000
+  use_wandb: false
+  wandb_runname: AT131K_test
+  logging: true
+  log_fname: log_AT131K
+use_checkpoint: false
+checkpoint_file: wiki31k.pt
+best_p1: 0.88
+
+2025.02.10-22:47:31 trainable params: 114208687 || all params: 114208687 || trainable %: 100.0
+2025.02.14-22:56:51  Training model for Configuration 
+ -----Data Config------ 
+ dataset: wiki31k
+is_lf_data: false
+augment_label_data: false
+use_filter_eval: false
+num_labels: 30938
+max_len: 128
+num_workers: 8
+batch_size: 32
+test_batch_size: 32
+num_head_labels: 1546
+num_tail_labels: 29392
+ 
+  -----Model Config-----                 
+ encoder:
+  encoder_model: bert-base-uncased
+  encoder_tokenizer: ${dataset.model.encoder.encoder_model}
+  encoder_ftr_dim: ${encoder_feature_size:${dataset.model.encoder.encoder_model}}
+  pool_mode: last_hidden_avg
+  feature_layers: 1
+  embed_dropout: 0.6
+  use_torch_compile: true
+  use_ngame_encoder_weights: false
+  ngame_checkpoint: ./NGAME_ENCODERS/${dataset.data.dataset}/state_dict.pt
+penultimate:
+  use_penultimate_layer: true
+  penultimate_size: 4096
+  penultimate_activation: relu
+ffi:
+  num_head_labels: 1546
+  num_tail_labels: 29392
+  use_sparse_layer: true
+  fan_in: 64
+  prune_mode: threshold
+  rewire_threshold: 0.01
+  rewire_fraction: 0.25
+  growth_mode: random
+  growth_init_mode: zero
+  input_features: ${input_size_select:${dataset.model.penultimate.use_penultimate_layer},
+    ${dataset.model.penultimate.penultimate_size},${dataset.model.encoder.feature_layers},${dataset.model.encoder.encoder_ftr_dim}}
+  output_features: ${dataset.data.num_labels}
+  rewire_interval: 300
+  use_rewire_scheduling: true
+  rewire_end_epoch: 0.66
+auxiliary:
+  use_meta_branch: false
+  group_y_group: 0
+  meta_cutoff_epoch: 5
+  auxloss_scaling: 0.5
+ 
+ ------Training Config------ 
+ seed: 42
+amp:
+  enabled: true
+  dtype: float16
+optimization:
+  loss_fn: squared_hinge
+  encoder_optimizer: adamw
+  xmc_optimizer: adamw
+  epochs: 100
+  grad_accum_step: 1
+  encoder_lr: 1.0e-05
+  penultimate_lr: 0.01
+  meta_lr: 0.0005
+  lr: 0.01
+  wd_encoder: 0.01
+  wd: 0.0001
+  lr_scheduler: CosineScheduleWithWarmup
+  lr_scheduler_xmc: CosineScheduleWithWarmup
+  warmup_steps: 1000
+  training_steps: 443
+evaluation:
+  train_evaluate: false
+  train_evaluate_every: 10
+  test_evaluate_every: 1
+  A: 0.5
+  B: 0.4
+  eval_psp: true
+verbose:
+  show_iter: false
+  print_iter: 2000
+  use_wandb: false
+  wandb_runname: AT131K_test
+  logging: true
+  log_fname: log_AT131K
+use_checkpoint: false
+checkpoint_file: wiki31k.pt
+best_p1: 0.88
+
+2025.02.14-22:56:51 trainable params: 240805428 || all params: 240805428 || trainable %: 100.0
+2025.02.14-23:08:50  Training model for Configuration 
+ -----Data Config------ 
+ dataset: wiki31k
+is_lf_data: false
+augment_label_data: false
+use_filter_eval: false
+num_labels: 30938
+max_len: 128
+num_workers: 8
+batch_size: 32
+test_batch_size: 32
+num_head_labels: 1546
+num_tail_labels: 29392
+ 
+  -----Model Config-----                 
+ encoder:
+  encoder_model: bert-base-uncased
+  encoder_tokenizer: ${dataset.model.encoder.encoder_model}
+  encoder_ftr_dim: ${encoder_feature_size:${dataset.model.encoder.encoder_model}}
+  pool_mode: last_hidden_avg
+  feature_layers: 1
+  embed_dropout: 0.6
+  use_torch_compile: true
+  use_ngame_encoder_weights: false
+  ngame_checkpoint: ./NGAME_ENCODERS/${dataset.data.dataset}/state_dict.pt
+penultimate:
+  use_penultimate_layer: true
+  penultimate_size: 4096
+  penultimate_activation: relu
+ffi:
+  num_head_labels: 1546
+  num_tail_labels: 29392
+  use_sparse_layer: true
+  fan_in: 64
+  prune_mode: threshold
+  rewire_threshold: 0.01
+  rewire_fraction: 0.25
+  growth_mode: random
+  growth_init_mode: zero
+  input_features: ${input_size_select:${dataset.model.penultimate.use_penultimate_layer},
+    ${dataset.model.penultimate.penultimate_size},${dataset.model.encoder.feature_layers},${dataset.model.encoder.encoder_ftr_dim}}
+  output_features: ${dataset.data.num_labels}
+  rewire_interval: 300
+  use_rewire_scheduling: true
+  rewire_end_epoch: 0.66
+auxiliary:
+  use_meta_branch: false
+  group_y_group: 0
+  meta_cutoff_epoch: 5
+  auxloss_scaling: 0.5
+ 
+ ------Training Config------ 
+ seed: 42
+amp:
+  enabled: true
+  dtype: float16
+optimization:
+  loss_fn: squared_hinge
+  encoder_optimizer: adamw
+  xmc_optimizer: adamw
+  epochs: 100
+  grad_accum_step: 1
+  encoder_lr: 1.0e-05
+  penultimate_lr: 0.01
+  meta_lr: 0.0005
+  lr: 0.01
+  wd_encoder: 0.01
+  wd: 0.0001
+  lr_scheduler: CosineScheduleWithWarmup
+  lr_scheduler_xmc: CosineScheduleWithWarmup
+  warmup_steps: 1000
+  training_steps: 443
+evaluation:
+  train_evaluate: false
+  train_evaluate_every: 10
+  test_evaluate_every: 1
+  A: 0.5
+  B: 0.4
+  eval_psp: true
+verbose:
+  show_iter: false
+  print_iter: 2000
+  use_wandb: false
+  wandb_runname: AT131K_test
+  logging: true
+  log_fname: log_AT131K
+use_checkpoint: false
+checkpoint_file: wiki31k.pt
+best_p1: 0.88
+
+2025.02.14-23:08:50 trainable params: 240805428 || all params: 240805428 || trainable %: 100.0
+2025.02.14-23:16:36  Training model for Configuration 
+ -----Data Config------ 
+ dataset: wiki31k
+is_lf_data: false
+augment_label_data: false
+use_filter_eval: false
+num_labels: 30938
+max_len: 128
+num_workers: 8
+batch_size: 32
+test_batch_size: 32
+num_head_labels: 1546
+num_tail_labels: 29392
+ 
+  -----Model Config-----                 
+ encoder:
+  encoder_model: bert-base-uncased
+  encoder_tokenizer: ${dataset.model.encoder.encoder_model}
+  encoder_ftr_dim: ${encoder_feature_size:${dataset.model.encoder.encoder_model}}
+  pool_mode: last_hidden_avg
+  feature_layers: 1
+  embed_dropout: 0.6
+  use_torch_compile: true
+  use_ngame_encoder_weights: false
+  ngame_checkpoint: ./NGAME_ENCODERS/${dataset.data.dataset}/state_dict.pt
+penultimate:
+  use_penultimate_layer: true
+  penultimate_size: 4096
+  penultimate_activation: relu
+ffi:
+  num_head_labels: 1546
+  num_tail_labels: 29392
+  use_sparse_layer: true
+  fan_in: 64
+  prune_mode: threshold
+  rewire_threshold: 0.01
+  rewire_fraction: 0.25
+  growth_mode: random
+  growth_init_mode: zero
+  input_features: ${input_size_select:${dataset.model.penultimate.use_penultimate_layer},
+    ${dataset.model.penultimate.penultimate_size},${dataset.model.encoder.feature_layers},${dataset.model.encoder.encoder_ftr_dim}}
+  output_features: ${dataset.data.num_labels}
+  rewire_interval: 300
+  use_rewire_scheduling: true
+  rewire_end_epoch: 0.66
+auxiliary:
+  use_meta_branch: false
+  group_y_group: 0
+  meta_cutoff_epoch: 5
+  auxloss_scaling: 0.5
+ 
+ ------Training Config------ 
+ seed: 42
+amp:
+  enabled: true
+  dtype: float16
+optimization:
+  loss_fn: squared_hinge
+  encoder_optimizer: adamw
+  xmc_optimizer: adamw
+  epochs: 100
+  grad_accum_step: 1
+  encoder_lr: 1.0e-05
+  penultimate_lr: 0.01
+  meta_lr: 0.0005
+  lr: 0.01
+  wd_encoder: 0.01
+  wd: 0.0001
+  lr_scheduler: CosineScheduleWithWarmup
+  lr_scheduler_xmc: CosineScheduleWithWarmup
+  warmup_steps: 1000
+  training_steps: 443
+evaluation:
+  train_evaluate: false
+  train_evaluate_every: 10
+  test_evaluate_every: 1
+  A: 0.5
+  B: 0.4
+  eval_psp: true
+verbose:
+  show_iter: false
+  print_iter: 2000
+  use_wandb: false
+  wandb_runname: AT131K_test
+  logging: true
+  log_fname: log_AT131K
+use_checkpoint: false
+checkpoint_file: wiki31k.pt
+best_p1: 0.88
+
+2025.02.14-23:16:36 trainable params: 240805428 || all params: 240805428 || trainable %: 100.0

@@ -49,14 +49,17 @@ class DataHandler:
         self.path = path
         self.device = torch.device(cfg.environment.device)
         self.low_precision_dtype = dtype_map[cfg.training.amp.dtype]
-        
         self.label_map = {}
         self.read_files()
+    
         if cfg.model.auxiliary.use_meta_branch:
             self.group_y = self.load_group(cfg.data.dataset)
 
         
     def load_group(self,dataset):
+
+
+        
         '''
         loading of precomputed cluster file
         '''
@@ -81,10 +84,43 @@ class DataHandler:
                 label_raw_texts,label_labels = self._read_lf_files(self.path.label_json,label_json=True)
                 self.train_raw_texts += label_raw_texts
                 self.train_labels += label_labels
-                
-        for i, k in enumerate(sorted(self.label_map.keys())):
-            self.label_map[k] = i
+
+        threshold=100
+        label_freq = {}
+        for labels in self.train_labels:
+            for label in labels:
+                label_freq[label] = label_freq.get(label, 0) + 1
+        head_labels = [k for k in self.label_map.keys() if label_freq.get(k,0)>threshold]
+        tail_labels = [k for k in self.label_map.keys() if label_freq.get(k, 0) <= threshold]
+        new_label_map = {}
+
+
+        for i, k in enumerate(sorted(head_labels)):
+            new_label_map[k] = i
+
+
+        for j, k in enumerate(sorted(tail_labels), start=len(head_labels)):
+            new_label_map[k] = j
+
+        sorted_labels = dict(sorted(new_label_map.items(), key=lambda item: item[1], reverse=True)) #sorting in descending order
+
+        #reset label_map and assign new indices
+        self.label_map = {}
+        print(sorted_labels)
+        for idx, (label,freq) in enumerate(sorted_labels.items()):
+            self.label_map[label] = idx
+
+
+        #self.label_map = new_label_map
+        #self.head_len = len(head_labels)
+     
         
+        #for i, k in enumerate(sorted(self.label_map.keys())):
+         #   self.label_map[k] = i
+        
+        
+    
+
         
     def _read_text_files(self,filename):
         container = []
@@ -223,4 +259,3 @@ class SimpleDataset(Dataset):
             group_label_ids = torch.zeros(10)
         
         return tokens, attention_mask, labels, group_label_ids
-

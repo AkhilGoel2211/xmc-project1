@@ -27,6 +27,8 @@ model:
     penultimate_activation: relu
 
   ffi:
+    num_head_labels: 33504
+    num_tail_labels: 636587
     use_sparse_layer: True
     fan_in: 128
     prune_mode: threshold

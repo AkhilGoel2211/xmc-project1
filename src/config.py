@@ -26,6 +26,9 @@ class DataConfig:
     num_workers: int = 8
     batch_size: int = 512
     test_batch_size: int = 512
+    num_head_labels:int = int(0.05*670091)
+    num_tail_labels:int = int(0.95*670091)
+    input_features: int = 768
     
 @dataclass
 class EncoderConfig:
@@ -70,6 +73,8 @@ class FFIConfig:
     growth_mode: str = "random"
     growth_init_mode: str = "zero"
     input_features: int = 768
+    num_head_labels:int = int(0.05*670091)
+    num_tail_labels:int = int(0.95*670091)
     output_features: int = 131073 #depends on num_labels in data
     rewire_interval: int = 300
     use_rewire_scheduling: bool = True
@@ -155,6 +160,8 @@ class VerboseConfig:
 class CheckPointConfig:
     use_checkpoint: bool = False  #whether to use automatic checkpoint
     checkpoint_file: str = "PBCE_NoLF_NM1"
+
+    
     best_p1: float = 0.2  # to store the model above this performance in case of automatic checkpoint
     
 @dataclass
@@ -172,6 +179,7 @@ class SimpleConfig:
     data: DataConfig = field(default_factory=DataConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
+    input_features: int = 768
     
 
 def validate_config(cfg: DictConfig):

@@ -8,6 +8,8 @@ data:
   num_workers: 8
   batch_size: 32
   test_batch_size: 32
+  num_head_labels: 1546
+  num_tail_labels: 29392
 
 model:
   encoder:
@@ -27,6 +29,8 @@ model:
     penultimate_activation: relu
 
   ffi:
+    num_head_labels: 1546
+    num_tail_labels: 29392
     use_sparse_layer: True
     fan_in: 64
     prune_mode: threshold

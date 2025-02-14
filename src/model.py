@@ -2,6 +2,7 @@ import torch
 from torch import nn
 from torch_sparse.rewire import FixedFanIn
 from transformers import AutoModel, AutoConfig
+from torch.utils.data import Dataset, DataLoader
 
 class TransformerEncoder(nn.Module):
     '''
@@ -71,7 +72,7 @@ class SimpleTModel(nn.Module):
 
     def __init__(self,cfg,path,group_y_labels):
         super(SimpleTModel,self).__init__()
-        
+     
         self.cfg = cfg
         self.path = path
         self.group_y_labels = group_y_labels
@@ -80,8 +81,17 @@ class SimpleTModel(nn.Module):
         self.configure_components(cfg)
         self.use_sparse_layer = cfg.model.ffi.use_sparse_layer
         self.auxloss_scaling = 0
+      
+        
+    
+        
         if cfg.model.encoder.use_torch_compile:
             self.encoder = torch.compile(self.encoder)
+        #self.head_layer = nn.Linear(self.head_len, cfg.model.head_label)  # Dense layer for head labels
+        #self.tail_layer = nn.Linear(cfg.data.num_labels - self.head_len, cfg.model.tail_label_size)  # Sparse layer for tail labels
+    
+        self.head_layer = nn.Linear(self.cfg.model.ffi.input_features,self.cfg.model.ffi.num_head_labels).to(self.device)  # Dense layer for head labels
+        self.tail_layer = nn.Linear(self.cfg.model.ffi.input_features,self.cfg.model.ffi.num_tail_labels).to(self.device) # Sparse layer for tail labels
         
             
     def configure_components(self, cfg):
@@ -132,7 +142,10 @@ class SimpleTModel(nn.Module):
         if self.cfg.model.penultimate.use_penultimate_layer:
             out = self.penultimate(out).to(dtype)
             
-        out = self.linear(out)
+        #out = self.linear(out) 
+        head_logits = self.head_layer(out)  # Get logits for head labels
+        tail_logits = self.tail_layer(out)  # Get logits for tail labels
+        out = torch.cat((head_logits, tail_logits), dim=1)  # Merge logits
 
         return out, branch_out  
     

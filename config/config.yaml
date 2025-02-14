@@ -1,6 +1,6 @@
 defaults:
   - environment: env
-  - dataset: lfamazontitles131k
+  - dataset: wiki31k
   - _self_
 
 dataset_path: ""

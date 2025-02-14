@@ -1,0 +1,91 @@
+environment:
+  running_env: guest
+  cuda_device_id: 0
+  device: cuda
+dataset:
+  data:
+    dataset: wiki31k
+    is_lf_data: false
+    augment_label_data: false
+    use_filter_eval: false
+    num_labels: 30938
+    max_len: 128
+    num_workers: 8
+    batch_size: 32
+    test_batch_size: 32
+  model:
+    encoder:
+      encoder_model: bert-base-uncased
+      encoder_tokenizer: ${dataset.model.encoder.encoder_model}
+      encoder_ftr_dim: ${encoder_feature_size:${dataset.model.encoder.encoder_model}}
+      pool_mode: last_hidden_avg
+      feature_layers: 1
+      embed_dropout: 0.6
+      use_torch_compile: true
+      use_ngame_encoder_weights: false
+      ngame_checkpoint: ./NGAME_ENCODERS/${dataset.data.dataset}/state_dict.pt
+    penultimate:
+      use_penultimate_layer: true
+      penultimate_size: 4096
+      penultimate_activation: relu
+    ffi:
+      use_sparse_layer: true
+      fan_in: 64
+      prune_mode: threshold
+      rewire_threshold: 0.01
+      rewire_fraction: 0.25
+      growth_mode: random
+      growth_init_mode: zero
+      input_features: ${input_size_select:${dataset.model.penultimate.use_penultimate_layer},
+        ${dataset.model.penultimate.penultimate_size},${dataset.model.encoder.feature_layers},${dataset.model.encoder.encoder_ftr_dim}}
+      output_features: ${dataset.data.num_labels}
+      rewire_interval: 300
+      use_rewire_scheduling: true
+      rewire_end_epoch: 0.66
+    auxiliary:
+      use_meta_branch: false
+      group_y_group: 0
+      meta_cutoff_epoch: 5
+      auxloss_scaling: 0.5
+  training:
+    seed: 42
+    amp:
+      enabled: true
+      dtype: float16
+    optimization:
+      loss_fn: squared_hinge
+      encoder_optimizer: adamw
+      xmc_optimizer: adamw
+      epochs: 100
+      grad_accum_step: 1
+      encoder_lr: 1.0e-05
+      penultimate_lr: 0.01
+      meta_lr: 0.0005
+      lr: 0.01
+      wd_encoder: 0.01
+      wd: 0.0001
+      lr_scheduler: CosineScheduleWithWarmup
+      lr_scheduler_xmc: CosineScheduleWithWarmup
+      warmup_steps: 1000
+      training_steps: 1
+    evaluation:
+      train_evaluate: false
+      train_evaluate_every: 10
+      test_evaluate_every: 1
+      A: 0.5
+      B: 0.4
+      eval_psp: true
+    verbose:
+      show_iter: false
+      print_iter: 2000
+      use_wandb: false
+      wandb_runname: none
+      logging: true
+      log_fname: log_wiki31k
+    use_checkpoint: false
+    checkpoint_file: wiki31k.pt
+    best_p1: 0.88
+dataset_path: ''
+use_wandb: false
+wandb_runname: AT131K_test
+log_fname: log_AT131K
