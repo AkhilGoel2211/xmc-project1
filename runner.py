@@ -26,9 +26,7 @@ class Runner:
         self.cfg = cfg
         self.path = path    
         data_handler = DataHandler(cfg,path)
-        head_len = data_handler.head_len
-    
-        self.head_len = data_handler.head_len
+        
         self.label_map = data_handler.label_map
         self.device = torch.device(cfg.environment.device)
         self.low_precision_dtype = dtype_map[cfg.training.amp.dtype]
@@ -55,7 +53,7 @@ class Runner:
         
     def _initialize_settings(self,cfg,data_handler):
         
-        self.model = SimpleTModel(cfg,self.path,self.group_y_labels,self.head_len)
+        self.model = SimpleTModel(cfg,self.path,self.group_y_labels)
         param_list, param_list_xmc = self.model.param_list()
         self.param_count = print_trainable_parameters(self.model)
         
@@ -148,14 +146,17 @@ class Runner:
             
             if (i+1) % self.cfg.training.optimization.grad_accum_step==0:
                 self.scaler.step(self.optimizer)
-                self.scaler.step(self.optimizer_xmc) 
                 self.scaler.update()
+                if self.optimizer_xmc is not None and any(p.grad is not None for group in self.optimizer_xmc.param_groups for p in group['params']):
+                    self.scaler.step(self.optimizer_xmc)
+                
                 self.lr_scheduler.step()
                 self.lr_scheduler_xmc.step()
                     
                 self.optimizer.zero_grad(set_to_none=True)
-                self.optimizer_xmc.zero_grad(set_to_none=True)
-
+                if self.optimizer_xmc is not None:
+                    self.optimizer_xmc.zero_grad(set_to_none=True)
+                
                 if self.cfg.model.ffi.use_sparse_layer and self.cfg.model.ffi.use_rewire_scheduling:
                     self.rewire_scheduler.step()
                     self.model.linear.rewire_threshold = self.rewire_scheduler.get_dr()
