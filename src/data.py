@@ -85,38 +85,45 @@ class DataHandler:
                 self.train_raw_texts += label_raw_texts
                 self.train_labels += label_labels
 
+        label_count = {}
+        for labels in self.train_labels:
+            for label in labels:
+                label_count[label] = label_count.get(label, 0) + 1
+        total_unique_labels = len(label_count)
+        print(f"Total number of unique labels: {total_unique_labels}")
+
         threshold=100
         label_freq = {}
         for labels in self.train_labels:
             for label in labels:
                 label_freq[label] = label_freq.get(label, 0) + 1
-        head_labels = [k for k in self.label_map.keys() if label_freq.get(k,0)>threshold]
-        tail_labels = [k for k in self.label_map.keys() if label_freq.get(k, 0) <= threshold]
-        new_label_map = {}
-
-
-        for i, k in enumerate(sorted(head_labels)):
-            new_label_map[k] = i
-
-
-        for j, k in enumerate(sorted(tail_labels), start=len(head_labels)):
-            new_label_map[k] = j
-
-        sorted_labels = dict(sorted(new_label_map.items(), key=lambda item: item[1], reverse=True)) #sorting in descending order
-
-        #reset label_map and assign new indices
-        self.label_map = {}
-        print(sorted_labels)
-        for idx, (label,freq) in enumerate(sorted_labels.items()):
-            self.label_map[label] = idx
-
-
-        #self.label_map = new_label_map
-        #self.head_len = len(head_labels)
-     
         
-        #for i, k in enumerate(sorted(self.label_map.keys())):
-         #   self.label_map[k] = i
+        
+        num_head_labels = 31829 
+        num_tail_labels = 604758 
+
+        #head_labels = []
+        
+        #for i in range(min(num_head_labels,num_tail_labels+num_head_labels)):
+         #   head_labels.append(sorted_labels[i])
+
+        #tail_labels = []
+        
+        #for i in range(num_head_labels,num_head_labels+num_tail_labels):
+          #  head_labels.append(sorted_labels[i])
+        
+        sorted_labels = sorted(label_freq.items(), key=lambda item: item[1], reverse=True)
+
+        #head_labels = [k for k in self.label_map if label_freq.get(k,0)>threshold]
+        #tail_labels = [k for k in self.label_map if label_freq.get(k, 0) <= threshold]
+
+        total_labels = len(label_freq)
+        
+
+        head_labels = [label for label in sorted_labels[:min(num_head_labels, total_labels)]]
+        tail_labels = [label for label in sorted_labels[num_head_labels:min(num_head_labels + num_tail_labels, total_labels)]]
+    
+
         
         
     
@@ -184,7 +191,7 @@ class DataHandler:
         shuffle=False
         batch_size = self.cfg.data.test_batch_size
         if mode == 'train':
-            shuffle=True
+            shuffle=False
             batch_size = self.cfg.data.batch_size
 
         return DataLoader(dset, batch_size=batch_size, num_workers=self.cfg.data.num_workers, pin_memory=True, shuffle=shuffle, collate_fn=collate)
