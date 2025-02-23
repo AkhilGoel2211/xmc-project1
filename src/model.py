@@ -87,9 +87,7 @@ class SimpleTModel(nn.Module):
         
         if cfg.model.encoder.use_torch_compile:
             self.encoder = torch.compile(self.encoder)
-        #self.head_layer = nn.Linear(self.head_len, cfg.model.head_label)  # Dense layer for head labels
-        #self.tail_layer = nn.Linear(cfg.data.num_labels - self.head_len, cfg.model.tail_label_size)  # Sparse layer for tail labels
-    
+        
         self.head_layer = nn.Linear(self.cfg.model.ffi.input_features,self.cfg.model.ffi.num_head_labels).to(self.device)  # Dense layer for head labels
         self.tail_layer = nn.Linear(self.cfg.model.ffi.input_features,self.cfg.model.ffi.num_tail_labels).to(self.device) # Sparse layer for tail labels
         
@@ -143,8 +141,8 @@ class SimpleTModel(nn.Module):
             out = self.penultimate(out).to(dtype)
             
         #out = self.linear(out) 
-        head_logits = self.head_layer(out)  # Get logits for head labels
-        tail_logits = self.tail_layer(out)  # Get logits for tail labels
+        head_logits = self.head_layer(out)  
+        tail_logits = self.tail_layer(out)  
         out = torch.cat((head_logits, tail_logits), dim=1)  # Merge logits
 
         return out, branch_out  
