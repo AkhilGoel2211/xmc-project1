@@ -59,7 +59,7 @@ def main(cfg: SimpleConfig) -> None:
     torch.manual_seed(seed)
     random.seed(seed)
     np.random.seed(seed)
-    print(OmegaConf.to_yaml(cfg))
+    #print(OmegaConf.to_yaml(cfg))
 
     
  
@@ -103,11 +103,20 @@ def main(cfg: SimpleConfig) -> None:
     test_loader = data_handler.getDataLoader(test_dset,mode='test')
     train_loader = data_handler.getDataLoader(train_dset,mode='train')
     
+    for i, (tokens, mask, labels, group_labels) in enumerate(train_loader):
+        if i >= 5:  # Limit to first 5 batches for inspection
+            break
+        print(f"Batch {i + 1}:")
+        raw_text = train_dset.raw_text[i * len(tokens) + i]  # Access the raw text
+        print(f"Data Point {i + 1}:")
+        print("Raw Text:", raw_text)  # Print the raw text
+        print("Label Identifiers:", labels)  # Print the corresponding label
+        print("-" * 20)
     # Validate and adjust configurations dynamically
     cfg.training.optimization.training_steps = len(train_loader)
     validate_config(cfg)
 
-
+    
     runner = Runner(cfg,path,data_handler)  
 
     print(f"wandb run name: {cfg.training.verbose.wandb_runname }")
