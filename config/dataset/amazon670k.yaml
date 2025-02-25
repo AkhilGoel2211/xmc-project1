@@ -6,7 +6,7 @@ data:
   num_labels: 670091  
   max_len: 128
   num_workers: 8
-  batch_size: 64
+  batch_size: 2
   test_batch_size: 64
 
 model:
@@ -27,8 +27,8 @@ model:
     penultimate_activation: relu
 
   ffi:
-    num_head_labels: 33504
-    num_tail_labels: 636587
+    num_head_labels: 31829
+    num_tail_labels: 604758
     use_sparse_layer: True
     fan_in: 128
     prune_mode: threshold
