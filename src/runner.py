@@ -146,14 +146,17 @@ class Runner:
             
             if (i+1) % self.cfg.training.optimization.grad_accum_step==0:
                 self.scaler.step(self.optimizer)
-                self.scaler.step(self.optimizer_xmc) 
                 self.scaler.update()
+                if self.optimizer_xmc is not None and any(p.grad is not None for group in self.optimizer_xmc.param_groups for p in group['params']):
+                    self.scaler.step(self.optimizer_xmc)
+                
                 self.lr_scheduler.step()
                 self.lr_scheduler_xmc.step()
                     
                 self.optimizer.zero_grad(set_to_none=True)
-                self.optimizer_xmc.zero_grad(set_to_none=True)
-
+                if self.optimizer_xmc is not None:
+                    self.optimizer_xmc.zero_grad(set_to_none=True)
+                
                 if self.cfg.model.ffi.use_sparse_layer and self.cfg.model.ffi.use_rewire_scheduling:
                     self.rewire_scheduler.step()
                     self.model.linear.rewire_threshold = self.rewire_scheduler.get_dr()
