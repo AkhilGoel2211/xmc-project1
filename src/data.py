@@ -92,41 +92,15 @@ class DataHandler:
         total_unique_labels = len(label_count)
         print(f"Total number of unique labels: {total_unique_labels}")
 
-        threshold=100
-        label_freq = {}
-        for labels in self.train_labels:
-            for label in labels:
-                label_freq[label] = label_freq.get(label, 0) + 1
-        
-        
-        num_head_labels = 31829 
-        num_tail_labels = 604758 
-
-        #head_labels = []
-        
-        #for i in range(min(num_head_labels,num_tail_labels+num_head_labels)):
-         #   head_labels.append(sorted_labels[i])
-
-        #tail_labels = []
-        
-        #for i in range(num_head_labels,num_head_labels+num_tail_labels):
-          #  head_labels.append(sorted_labels[i])
-        
-        sorted_labels = sorted(label_freq.items(), key=lambda item: item[1], reverse=True)
-
-        #head_labels = [k for k in self.label_map if label_freq.get(k,0)>threshold]
-        #tail_labels = [k for k in self.label_map if label_freq.get(k, 0) <= threshold]
-
-        total_labels = len(label_freq)
-        
-
-        head_labels = [label for label in sorted_labels[:min(num_head_labels, total_labels)]]
-        tail_labels = [label for label in sorted_labels[num_head_labels:min(num_head_labels + num_tail_labels, total_labels)]]
     
 
-        
-        
-    
+        sorted_labels = sorted(self.label_map.items(), key=lambda x: x[1], reverse=True)
+        # Reset label_map and assign new indices
+        self.label_map = {}
+
+        for idx, (label, freq) in enumerate(sorted_labels):
+            self.label_map[label] = idx
+       
 
         
     def _read_text_files(self,filename):
@@ -141,7 +115,7 @@ class DataHandler:
         container = []
         f = open(filename,encoding="utf8")
         for line in f:
-            for l in line.strip().split():
+            for l in line.strip().split():    #update the freq count for train and test as done in read_files over here
                 self.label_map[l] = 0
             container.append(line.strip().split())
             
@@ -162,7 +136,7 @@ class DataHandler:
                 else:
                     lbls = data['target_ind']
                     for l in lbls:
-                        self.label_map[l]=0
+                        self.label_map[l]= l.get(l,0)+1 #update the freq count for train and test as done in read_files over here
                     labels.append(lbls)
 
         return text_data,labels
